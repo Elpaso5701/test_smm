@@ -1,59 +1,3 @@
-# name: Test EC2 Instance
-
-# on:
-#   push:
-#     branches: [ main ]
-#   pull_request:
-#     branches: [ main ]
-#   workflow_dispatch: 
-# jobs:
-#   test-ec2:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v3
-
-#       - name: Configure AWS credentials
-#         uses: aws-actions/configure-aws-credentials@v1
-#         with:
-#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#           aws-region: us-east-1  # Замените на ваш регион
-
-#       - name: Get EC2 instance ID
-#         id: get-instance
-#         run: |
-#           INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=nodejs-server" --query "Reservations[0].Instances[0].InstanceId" --output text)
-#           echo "INSTANCE_ID=${INSTANCE_ID}" >> $GITHUB_ENV
-#           echo "Instance ID: ${INSTANCE_ID}"
-
-#       - name: Run ifconfig command on EC2 instance
-#         run: |
-#           aws ssm send-command \
-#             --instance-ids "${{ env.INSTANCE_ID }}" \
-#             --document-name "AWS-RunShellScript" \
-#             --comment "IP config" \
-#             --parameters commands=ifconfig \
-#             --output text
-
-#       - name: Check Docker status
-#         run: |
-#           aws ssm send-command \
-#             --instance-ids "${{ env.INSTANCE_ID }}" \
-#             --document-name "AWS-RunShellScript" \
-#             --comment "Docker status" \
-#             --parameters commands="docker ps" \
-#             --output text
-
-#       - name: Get container logs
-#         run: |
-#           aws ssm send-command \
-#             --instance-ids "${{ env.INSTANCE_ID }}" \
-#             --document-name "AWS-RunShellScript" \
-#             --comment "Container logs" \
-#             --parameters commands="docker logs \$(docker ps -q)" \
-#             --output text
-
 name: Test EC2 Instance
 
 on:
@@ -74,20 +18,83 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Check instance status
+      - name: Get instance ID by name
         run: |
-          INSTANCE_ID="i-0dd3631cd6fa58fa7"
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=nodejs-server" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "No running instance found with name 'nodejs-server'"
+            exit 1
+          fi
+          
+          echo "Found instance: $INSTANCE_ID"
           echo "INSTANCE_ID=${INSTANCE_ID}" >> $GITHUB_ENV
           
-          aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query "Reservations[0].Instances[0].State.Name"
-          
+          # Проверяем SSM статус
           echo "Checking SSM status..."
           aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$INSTANCE_ID"
 
-      - name: Run simple command
+      - name: Run ifconfig command
         run: |
-          aws ssm send-command \
+          COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ env.INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=['echo Hello World']" \
+            --parameters "commands=['ifconfig']" \
+            --query "Command.CommandId" \
+            --output text)
+          
+          echo "Command ID: $COMMAND_ID"
+          echo "Waiting for command to complete..."
+          
+          # Ждем 5 секунд для выполнения команды
+          sleep 5
+          
+          # Получаем результат выполнения команды
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ env.INSTANCE_ID }}" \
+            --query "StandardOutputContent" \
+            --output text
+
+      - name: Check Docker status
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=['docker ps -a']" \
+            --query "Command.CommandId" \
+            --output text)
+          
+          echo "Command ID: $COMMAND_ID"
+          echo "Waiting for command to complete..."
+          
+          sleep 5
+          
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ env.INSTANCE_ID }}" \
+            --query "StandardOutputContent" \
+            --output text
+
+      - name: Get Docker logs
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ env.INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["docker logs $(docker ps -q | head -1)"]' \
+            --query "Command.CommandId" \
+            --output text)
+          
+          echo "Command ID: $COMMAND_ID"
+          echo "Waiting for command to complete..."
+          
+          sleep 5
+          
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ env.INSTANCE_ID }}" \
+            --query "StandardOutputContent" \
             --output text
